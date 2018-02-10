@@ -1,0 +1,121 @@
+---
+- hosts: all
+  vars:
+    - ovpn_volume_name: ovpn_data
+    - ovpn_volume_directory: "/etc/openvpn"
+    - tmp_result_directory: /tmp/ovpn_result/
+    - result_directory: "../result_{{ hostvars[inventory_hostname].ansible_ssh_host }}"
+    - pip_packages:
+      - { name: pip, version: "latest", install: true }
+      - { name: setuptools, version: "latest", install: true }
+      - { name: docker-py, version: "latest", install: true }
+      - { name: docker-compose, version: "1.9.0", install: true }
+      - { name: pexpect, version: "latest", install: true}
+  tasks:
+    - name: add docker apt-key
+      apt_key:
+        keyserver: hkp://p80.pool.sks-keyservers.net:80
+        state: present
+        id: 58118E89F3A912897C070ADBF76221572C52609D
+      become: true
+      become_user: root
+    - name: add repository
+      apt_repository:
+        repo: deb https://apt.dockerproject.org/repo ubuntu-xenial main
+        state: present
+      become: true
+      become_user: root
+    - name: install docker engine
+      apt:
+        update_cache: yes
+        state: latest
+        name: docker-engine
+      become: true
+      become_user: root
+    - name: Install python-pip python3-pip
+      apt:
+        update_cache: yes
+        state: latest
+        name: python-pip
+      become: true
+      become_user: root
+    - name: Upgrade latest pip, setuptools, docker-py and docker-compose with pip
+      pip:
+        name: "{{ item.name }}"
+        state: latest
+      with_items:
+        - "{{ pip_packages }}"
+      when: (item.install and item.version == "latest")
+      become: true
+      become_user: root
+    - name: install versioned packages
+      pip:
+        name: "{{ item.name }}"
+        version: "{{ item.version }}"
+      with_items:
+        - "{{ pip_packages }}"
+      when: (item.install and item.version != "latest" )
+      become: true
+      become_user: root
+    - name: docker names
+      docker_volume:
+        name: "{{ ovpn_volume_name }}"
+        state: present
+      become: true
+      become_user: root
+    - name: generate config
+      shell: "docker run -v {{ ovpn_volume_name }}:{{ ovpn_volume_directory }} --rm kylemanna/openvpn ovpn_genconfig -u udp://{{ hostvars[inventory_hostname].ansible_ssh_host }}"
+      become: true
+      become_user: root
+    - name: generate pki
+      expect:
+        command: "docker run -v {{ ovpn_volume_name }}:{{ ovpn_volume_directory }} --rm -it kylemanna/openvpn ovpn_initpki nopass"
+        responses:
+          (?i)Confirm removal: "yes"
+          (?i)Common Name: "{{ hostvars[inventory_hostname].ansible_ssh_host }}"
+        timeout: 600
+      become: true
+      become_user: root
+    - name: generate client certificate
+      shell: "docker run -v {{ ovpn_volume_name }}:{{ ovpn_volume_directory }} --rm -i kylemanna/openvpn easyrsa build-client-full {{ item.name }} nopass"
+      become: true
+      become_user: root
+      with_items:
+       - "{{ ovpn_clients }}"
+    - name: make temp directory for resulting ovpn
+      file:
+        path: "{{ tmp_result_directory }}"
+        state: directory
+    - name: getting configs in files
+      shell: "docker run -v {{ ovpn_volume_name }}:{{ ovpn_volume_directory }} --rm kylemanna/openvpn ovpn_getclient {{ item.name }} > {{ tmp_result_directory }}/{{ item.name }}.ovpn"
+      with_items:
+        - "{{ ovpn_clients }}"
+      become: true
+      become_user: root
+    - name: getting configs
+      synchronize:
+        mode: pull
+        dest: "{{ result_directory }}"
+        src: "{{ tmp_result_directory }}"
+    - name: remove result
+      file:
+        path: "{{ tmp_result_directory }}"
+        state: absent
+    - name: enable docker systemd servive
+      systemd:
+        name: docker
+        enabled: yes
+        masked: no
+    - name: start docker container
+      docker:
+        name: ovpn-container
+        image: kylemanna/openvpn
+        state: reloaded
+        ports:
+          - "1194:1194/udp"
+        volumes:
+          -  "{{ ovpn_volume_name }}:{{ ovpn_volume_directory }}"
+        cap_add: "NET_ADMIN"
+        restart_policy: always
+      become: true
+      become_user: root
