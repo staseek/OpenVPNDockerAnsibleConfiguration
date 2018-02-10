@@ -5,7 +5,7 @@ Generate clients certificates and ovpn configurations
 
 ### How to use
 1. Change ansible_deploy/inventory.yml for your vps server
-2. Change array for your openvpn clients
+2. Change array for your openvpn clients in host_vars
 ```
 - ovpn_clients:
       - name: iphone_ss6
